@@ -24,7 +24,7 @@ def compute_spectrum(audio_path, rate=44100, target_duration=4):
     target_len = int(rate * target_duration)
     if len(y) < target_len:
         # Zero padding
-        y = np.pad(y, (0, target_len - len(y)), mode='constant')
+        y = np.pad(y, (0, target_len - len(y)), mode="constant")
     elif len(y) > target_len:
         # Acortar
         y = y[:target_len]
@@ -33,7 +33,7 @@ def compute_spectrum(audio_path, rate=44100, target_duration=4):
     y_padded = np.zeros(pad_len)
     y_padded[:n] = y
     fft_vals = np.fft.fft(y_padded)
-    freqs = np.linspace(0, sr, len(fft_vals) // 2)
+    freqs = np.linspace(0, sr / 2, len(fft_vals) // 2)
     mag = np.abs(fft_vals[: len(fft_vals) // 2])
     return freqs, mag
 
@@ -50,21 +50,21 @@ def shift_spectrum(mag, shift_bins):
 def stretch_spectrum(mag, stretch_factor):
     n = len(mag)
     x_original = np.linspace(0, 1, n)
-    # Enscanchar o comprimir con interpolación lineal
-    x_stretched = np.linspace(0, 1, int(n / stretch_factor))
+    n_stretched = int(n * stretch_factor)
+
+    # Estirar o comprimir el espectro
+    x_stretched = np.linspace(0, 1, n_stretched)
     interp = interp1d(x_original, mag, kind="linear", bounds_error=False, fill_value=0)
     mag_stretched = interp(x_stretched)
-    # Volver al largo original
-    x_resample = np.linspace(0, 1, n)
-    interp_resample = interp1d(
-        np.linspace(0, 1, len(mag_stretched)),
-        mag_stretched,
-        kind="linear",
-        bounds_error=False,
-        fill_value=0,
-    )
-    stretched = interp_resample(x_resample)
-    return stretched
+
+    # Padding o truncar
+    if n_stretched < n:
+        padded = np.zeros(n)
+        padded[:n_stretched] = mag_stretched
+        return padded
+    else:
+        return mag_stretched[:n]
+
 
 
 def process_audio_file(path, rate=44100, n_peaks=15, augment=True):
@@ -111,7 +111,7 @@ def process_folder(
                     inps, outs = process_audio_file(full_path, rate, n_peaks, augment)
                     X.extend(inps)
                     Y.extend(outs)
-                    #Print dimensions of inputs and outputs
+                    # Dimensiones
                     print(f"Input shape: {[inp.shape for inp in inps]}")
                     print(f"Output shape: {[out.shape for out in outs]}")
                 except Exception as e:
@@ -119,6 +119,9 @@ def process_folder(
     np.savez_compressed(save_path, X=np.array(X), Y=np.array(Y))
     print(f"Saved dataset to {save_path}. Total samples: {len(X)}")
 
+
 if __name__ == "__main__":
     root_folder = "/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/SoundEffects"
-    process_folder(root_folder, rate=44100, n_peaks=15, augment=True, save_path="dataset.npz")
+    process_folder(
+        root_folder, rate=44100, n_peaks=15, augment=True, save_path="dataset.npz"
+    )

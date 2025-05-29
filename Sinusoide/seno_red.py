@@ -38,5 +38,10 @@ if __name__ == "__main__":
     # Graficar la pérdida de entrenamiento y validación
     plt.plot(history.history["loss"], label="Pérdida de entrenamiento")
     plt.plot(history.history["val_loss"], label="Pérdida de validación")
+    plt.xlabel("Época")
+    plt.ylabel("MSE")
+    plt.legend()
+    plt.title("Curvas de pérdida")
     plt.show()
+    
     model.save("sine_model.h5") #guardo

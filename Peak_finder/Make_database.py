@@ -121,7 +121,7 @@ def process_folder(
 
 
 if __name__ == "__main__":
-    root_folder = "/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/SoundEffects"
+    root_folder = r"C:\Users\usuario\Desktop\DSP_IA_local\DSP_IA\SoundEffects"
     process_folder(
         root_folder, rate=44100, n_peaks=15, augment=True, save_path="dataset.npz"
     )

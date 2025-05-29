@@ -13,7 +13,7 @@ def plot_spectrum_with_peaks(freqs, mag, peak_freqs, peak_amps, title="Spectrum 
     plt.show()
 
 # Example usage for a single file
-test_file = "/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/SoundEffects/BluezoneCorp - Steampunk Machines/Bluezone_BC0305_steampunk_machine_mechanical_texture_heavy_impact_011.wav"
+test_file = r"C:\Users\usuario\Desktop\DSP_IA_local\DSP_IA\SoundEffects\BluezoneCorp - Steampunk Machines\Bluezone_BC0305_steampunk_machine_mechanical_texture_heavy_impact_011.wav" 
 freqs, mag = Make_database.compute_spectrum(test_file)
 peak_freqs, peak_amps = Make_database.extract_peaks_from_spectrum(mag, freqs, n_peaks=15)
 plot_spectrum_with_peaks(freqs, mag, peak_freqs, peak_amps)

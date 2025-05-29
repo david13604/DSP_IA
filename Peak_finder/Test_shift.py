@@ -2,7 +2,8 @@ import matplotlib.pyplot as plt
 from Make_database import compute_spectrum, shift_spectrum, extract_peaks_from_spectrum
 import numpy as np
 
-audio_path = "/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/SoundEffects/BluezoneCorp - Steampunk Machines/Bluezone_BC0305_steampunk_machine_mechanical_texture_heavy_impact_011.wav"  # Change as needed
+
+audio_path = r"C:\Users\usuario\Desktop\DSP_IA_local\DSP_IA\SoundEffects\BluezoneCorp - Steampunk Machines\Bluezone_BC0305_steampunk_machine_mechanical_texture_heavy_impact_011.wav" 
 shift_bins = 5000  # Try positive or negative values
 n_peaks = 15
 
@@ -36,5 +37,5 @@ plt.xlabel("Frequency (Hz)")
 plt.ylabel("Normalized Magnitude")
 plt.legend()
 
-plt.tight_layout()
+plt.tight_layout() 
 plt.show()

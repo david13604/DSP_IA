@@ -6,7 +6,7 @@ from Make_database import (
 )
 import numpy as np
 
-audio_path = "/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/SoundEffects/BluezoneCorp - Steampunk Machines/Bluezone_BC0305_steampunk_machine_mechanical_texture_heavy_impact_011.wav"
+audio_path = r"C:\Users\usuario\Desktop\DSP_IA_local\DSP_IA\SoundEffects\BluezoneCorp - Steampunk Machines\Bluezone_BC0305_steampunk_machine_mechanical_texture_heavy_impact_011.wav" 
 stretch_factor = 0.9
 n_peaks = 15
 

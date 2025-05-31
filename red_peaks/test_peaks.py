@@ -12,10 +12,9 @@ y_test = np.load("dataset.npz")["Y"]
 y_test = y_test.reshape(2431, 30)  
 
 def pick_random_sample(x_test, y_test):
-    idx = np.random.randint(0, 2430)
 
-    espectro = x_test[idx]
-    peaks = y_test[idx]
+    espectro = x_test[0]
+    peaks = y_test[0]
 
     return espectro, peaks
 
@@ -23,6 +22,22 @@ def predecir_peaks(espectro):
     espectro = espectro.reshape(1, -1)  # Reshape para que sea compatible con la red
     prediccion = model.predict(espectro)
     return prediccion
+
+def plot_prediction_on_spectrum(mag, peak_freqs, peak_amps, fs=44100, title="Predicción sobre el espectro"):
+    w = np.linspace(0, fs / 2, len(mag))  # eje de frecuencias del espectro
+
+    peak_freqs_hz = peak_freqs * (fs / 2)  # convertir de [0, 1] → Hz
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(w, mag, label="Espectro")
+    plt.scatter(peak_freqs_hz, peak_amps, color="red", label="Predicción (picos)", zorder=5)
+    plt.title(title)
+    plt.xlabel("Frecuencia (Hz)")
+    plt.ylabel("Amplitud")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
 
 if __name__ == "__main__":
 
@@ -34,28 +49,13 @@ if __name__ == "__main__":
 
     prediccion = predecir_peaks(espectro)
 
+    prediccion = np.array(prediccion).flatten()  # Aplanar la predicción para facilitar el manejo
+
 
     print(prediccion.shape)
     print("Predicted shape:", prediccion[0].shape)
-    #print(prediccion[0])
 
-    for i in range(15):
-        print(f"frecuancia dataset {peaks[i]} - frecuencias predichas {prediccion[0][i]}")
+    peak_freqs = prediccion[::2]  # índices pares → frecuencias
+    peak_amps = prediccion[1::2] 
 
-    print('\n'*2)
-
-    for i in range(15,30):    
-        print(f"amplitud dataset {peaks[i]} - amplitudes predichas {prediccion[0][i]}")
-    #pred_peak_freqs = prediccion[0][:, 0]
-    #pred_peak_amps = prediccion[0][:, 1]
-    """
-    plt.figure(figsize=(12, 6))
-    plt.plot(espectro, label="Spectrum")
-    plt.scatter(peak_freqs, peak_amps, color='red', label="Actual Peaks")
-    plt.scatter(pred_peak_freqs, pred_peak_amps, color='green', label="Predicted Peaks", marker='x')
-    plt.xlabel("Frequency (Hz)")
-    plt.ylabel("Magnitude")
-    plt.title("Spectrum with Actual and Predicted Peaks")
-    plt.legend()
-    plt.show()
-    """
+    plot_prediction_on_spectrum(espectro, peak_freqs, peak_amps, title="Predicción de picos sobre el espectro")

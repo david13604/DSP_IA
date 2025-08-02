@@ -6,6 +6,33 @@ import tensorflow as tf
 
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
+class STFTLayer(keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super(STFTLayer, self).__init__(**kwargs)
+
+    def call(self, inputs, fs=44100, cant_muestras=4096):
+        f_C, I, A = inputs
+
+        print(f"f_C shape: {f_C.shape}, I shape: {I.shape}, A shape: {A.shape}")
+        t = tf.linspace(0.0, (cant_muestras - 1) / fs, cant_muestras)
+        t = tf.reshape(t, (1, 1, -1))  # para broadcasting
+        f_C = tf.expand_dims(f_C, -1)
+        I = tf.expand_dims(I, -1)
+        A = tf.expand_dims(A, -1)
+
+        mod = tf.sin(2 * np.pi * f_C * t)
+        fm_signal = tf.reduce_sum(A * tf.sin(2 * np.pi * f_C * t + I * mod), axis=1)
+
+        stft_result = tf.signal.stft(fm_signal, frame_length=128, frame_step=62, fft_length=128)
+        magnitude = tf.abs(stft_result)
+        log_magnitude = 20 * tf.math.log(magnitude + 1e-6) / tf.math.log(10.0)
+
+        min_val = tf.reduce_min(log_magnitude, axis=[1, 2], keepdims=True)
+        max_val = tf.reduce_max(log_magnitude, axis=[1, 2], keepdims=True)
+        norm_mag = (log_magnitude - min_val) / (max_val - min_val + 1e-6)
+
+        return norm_mag
+    
 class FM_red:
     def __init__(
             self,
@@ -34,8 +61,9 @@ class FM_red:
         I = keras.layers.Dense(self.output_shape//3, activation='sigmoid', name='f_M')(x) #indice de modulacion
         A = keras.layers.Dense(self.output_shape//3, activation='sigmoid', name='f_I')(x) #amplitud
 
+        print(f"f_C shape: {f_c.shape}, I shape: {I.shape}, A shape: {A.shape}")
         #ahora junto todo porque me pide unsa salida
-        output_layer = self.crear_stft(f_c, I, A)
+        output_layer = STFTLayer(name='stft_layer')([f_c, I, A])
         self.model = keras.models.Model(inputs=input_layer, outputs=output_layer)
 
     def compile(self, learning_rate=0.0001):
@@ -52,63 +80,7 @@ class FM_red:
             validation_data=validation_data,
             shuffle=True
         )
-
-    def crear_stft(f_c, I, A, dur=1.0, fs=16000, nperseg=128, noverlap=64):
-        # f_c, I, A: (batch,)
-        batch_size = tf.shape(f_c)[0]
-        n_samples = tf.cast(tf.math.round(dur * fs), tf.int32)
-    
-        # Tiempo t: (n_samples,)
-        t = tf.linspace(0.0, dur, n_samples)  # tf.float32
-    
-        # Expand to (batch, n_samples)
-        t = tf.reshape(t, (1, -1))
-        t = tf.tile(t, [batch_size, 1])  # shape (batch, n_samples)
-    
-        # Expand parameters to match t
-        f_c_exp = tf.reshape(f_c, (-1, 1))  # (batch, 1)
-        I_exp = tf.reshape(I, (-1, 1))
-        A_exp = tf.reshape(A, (-1, 1))
-    
-        # Señal FM sintetizada: x(t) = A * sin(2πf_c t + I * sin(2πf_c t))
-        phi = 2.0 * tf.constant(tf.math.pi) * f_c_exp * t
-        mod = I_exp * tf.sin(phi)
-        x = A_exp * tf.sin(phi + mod)  # (batch, n_samples)
-    
-        # STFT: usa tf.signal.stft
-        stft_result = tf.signal.stft(
-            x,
-            frame_length=nperseg,
-            frame_step=nperseg - noverlap,
-            fft_length=nperseg,
-            window_fn=tf.signal.hann_window
-        )  # shape: (batch, frames, freq_bins)
-    
-        # Magnitud en dB
-        magnitude = tf.abs(stft_result)
-        magnitude_db = 20.0 * tf.math.log(magnitude + 1e-6) / tf.math.log(10.0)
-    
-        # Normalización por batch
-        min_val = tf.reduce_min(magnitude_db, axis=[1, 2], keepdims=True)
-        max_val = tf.reduce_max(magnitude_db, axis=[1, 2], keepdims=True)
-        magnitude_db_norm = (magnitude_db - min_val) / (max_val - min_val + 1e-6)
-    
-        return magnitude_db_norm  # shape: (batch, frames, freq_bins)
-    
-    def crear_stft(self, f_C, I, A, fs = 44100, cant_muestras = 4096):
-        t = np.arange(cant_muestras) / fs
-        
-        for f_c, i, a in zip(f_C, I, A):
-            fm_signal = a * np.sin(2 * np.pi * f_c * t + i * np.sin(2 * np.pi * f_c * t))
-
-        f, t, Zxx = stft(fm_signal, fs=fs, nperseg=1024)
-        Zxx_mag = np.abs(Zxx)
-        Zxx_mag = 20 * np.log10(Zxx_mag + 1e-6)
-        min_val = np.min(Zxx_mag)
-        max_val = np.max(Zxx_mag)
-        Zxx_mag = (Zxx_mag - min_val) / (max_val - min_val)
-
-        return Zxx_mag
+        pass
     
 if __name__ == "__main__":
     input_shape = (65, 65, 1)  
@@ -119,5 +91,6 @@ if __name__ == "__main__":
     
     # Example data for training
     x_train = np.random.rand(100, *input_shape)  # 100 samples of random data
+    print(f"x_train shape: {x_train.shape}")
     
     model.fit(x_train, x_train, epochs=5, batch_size=10)

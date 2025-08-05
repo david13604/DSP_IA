@@ -1,5 +1,5 @@
 import matplotlib.pyplot as plt
-from Make_database import compute_spectrum, shift_spectrum, extract_peaks_from_spectrum
+from Peak_finder.Make_database_numpy import compute_spectrum, shift_spectrum, extract_peaks_from_spectrum
 import numpy as np
 
 

@@ -19,7 +19,7 @@ def process_audio_file(path, length=300, jump=150):
         if len(segment) < length:
             segment = tf.pad(segment, (0, length - len(segment)), mode="constant")
         # Take STFT
-        stft_segment = tf.signal.stft(segment, frame_length=256, frame_step=128)
+        stft_segment = tf.signal.stft(segment, frame_length=128, frame_step=32)
         segments.append(stft_segment)
     return tf.convert_to_tensor(segments)
 
@@ -46,6 +46,7 @@ def process_folder(root_folder, rate=44100, save_path="dataset.npz"):
                     # print(f"Input shape: {[seg.shape for seg in segments]}")
                 except Exception as e:
                     print(f"Failed to process {full_path}: {e}")
+    print(X[0].shape)
     np.savez_compressed(save_path, X=tf.convert_to_tensor(X))
     print(f"Saved dataset to {save_path}. Total samples: {len(X)}")
 
@@ -53,4 +54,7 @@ def process_folder(root_folder, rate=44100, save_path="dataset.npz"):
 if __name__ == "__main__":
     # root_folder = r"C:\Users\usuario\Desktop\DSP_IA_local\DSP_IA\SoundEffects"
     root_folder = "/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/SoundEffects"
+    #root_single = "/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/SoundEffects/DavidDumais - ATV Arctic Cat 650 H1"
+    root_single = "/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/Particular"
     process_folder(root_folder, rate=44100, save_path="dataset.npz")
+    process_folder(root_single, rate=44100, save_path="dataset_single.npz")

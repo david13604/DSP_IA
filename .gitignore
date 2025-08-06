@@ -1,1 +1,2 @@
-red_autoencoder/*.h5
+*.npz
+*.h5

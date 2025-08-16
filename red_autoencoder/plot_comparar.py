@@ -6,7 +6,7 @@ import tensorflow as tf
 
 # Load the autoencoder
 model = keras.models.load_model(
-    "primero_autoencoder.h5", compile=False
+    "primero_autoencoder.keras", compile=False
 )
 
 # Load a sample from your dataset

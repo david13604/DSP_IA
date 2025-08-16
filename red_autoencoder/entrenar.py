@@ -78,9 +78,9 @@ class Conv_Autoencoder:
         self.autoencoder.summary()
 
     def save(self, path):
-        self.autoencoder.save(path + '_autoencoder.h5')
-        self.encoder.save(path + '_encoder.h5')
-        self.decoder.save(path + '_decoder.h5')
+        self.autoencoder.save(path + '_autoencoder.keras')
+        self.encoder.save(path + '_encoder.keras')
+        self.decoder.save(path + '_decoder.keras')
 
 
 if __name__ == "__main__":
@@ -91,14 +91,14 @@ if __name__ == "__main__":
     autoencoder.build()
     autoencoder.summary()
 
-    path = "dataset.npz"
+    path = "dataset_single.npz"
 
     x_train = np.load(path)["X"]
     # Reshape to match input shape
     x_train = np.expand_dims(x_train, axis=-1).astype(
         np.float32
     )  # Add channel dimension
-    history = autoencoder.fit(x_train, epochs=10, batch_size=5)
+    history = autoencoder.fit(x_train, epochs=20, batch_size=5)
 
     autoencoder.save("primero")
 

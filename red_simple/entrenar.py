@@ -11,49 +11,55 @@ os.environ["KERAS_BACKEND"] = "tensorflow"
 LARGO = 12407 * 2
 FS = 44100
 
+def normalize_signal(signal, axis=None):
+    # Normalize along the given axis (per-sample if axis is specified)
+    min_val = tf.reduce_min(signal, axis=axis, keepdims=True)
+    max_val = tf.reduce_max(signal, axis=axis, keepdims=True)
+    return (signal - min_val) / tf.maximum(max_val - min_val, 1e-6)
 
 class FFTLayer(keras.layers.Layer):
     def __init__(self, **kwargs):
         super(FFTLayer, self).__init__(**kwargs)
+        self.global_max = self.add_weight(
+            name="global_max", shape=(), dtype=tf.float32, trainable=False, initializer="ones"
+        )
 
     def call(self, inputs, fs=FS, largo=LARGO):
         f_C, A, f_M = inputs
 
-        I = tf.constant(440 / FS, dtype=tf.float32)
+        f_min = 20.0
+        f_max = fs / 2.0
+
+        log_f_min = tf.math.log(f_min)
+        log_f_max = tf.math.log(f_max)
+
+        beta = tf.constant(0.6, dtype=tf.float32)
 
         t = tf.range(largo, dtype=tf.float32) / float(fs)
         t = tf.reshape(t, (1, 1, -1))  # para broadcasting
 
+        log_f_C = log_f_min + f_C * (log_f_max - log_f_min)
+        log_f_M = log_f_min + f_M * (log_f_max - log_f_min)
+
+        f_C = tf.exp(log_f_C)
+        f_M = tf.exp(log_f_M)
+
         f_C = tf.expand_dims(f_C, -1)
         f_M = tf.expand_dims(f_M, -1)
-        I = tf.expand_dims(I, -1)
+        beta = tf.expand_dims(beta, -1)
+
         A = tf.expand_dims(A, -1)
 
-        mod = tf.sin(2 * np.pi * f_M * t)
-        fm_signal = tf.reduce_sum(A * tf.sin(2 * np.pi * f_C * t + I * mod), axis=1)
+        mod = tf.sin(2 * tf.constant(np.pi, dtype=tf.float32) * f_M * t)
+        fm_signal = tf.reduce_sum(A * tf.sin(2 * tf.constant(np.pi, dtype=tf.float32) * f_C * t + beta * mod), axis=1)
 
         fft_result = tf.signal.rfft(tf.cast(fm_signal, tf.float32))
 
-        # # Compute magnitude and phase
-        # magnitude = tf.math.abs(fft_result) + 1e-6
-        # phase = tf.math.angle(fft_result)
+        # Extract real & imag directly (avoid angle)
+        real_norm = tf.math.real(fft_result)/self.global_max
+        imag_norm = tf.math.imag(fft_result)/self.global_max
 
-        # # Normalizar log-magnitude
-        # log_magnitude = (
-        #     20 * tf.math.log(tf.maximum(magnitude, 1e-6)) / tf.math.log(10.0)
-        # )
-        # min_val = tf.reduce_min(log_magnitude, axis=[1], keepdims=True)
-        # max_val = tf.reduce_max(log_magnitude, axis=[1], keepdims=True)
-        # norm_mag = (log_magnitude - min_val) / tf.maximum(max_val - min_val, 1e-6)
-
-        # # Devolver dos canales reales: [real, imag]
-        # real_part = norm_mag * tf.cos(phase)
-        # imag_part = norm_mag * tf.sin(phase)
-
-        real_part = tf.math.real(fft_result)
-        imag_part = tf.math.imag(fft_result)
-
-        out = tf.stack([real_part, imag_part], axis=-1)
+        out = tf.stack([real_norm, imag_norm], axis=-1)
         out = tf.where(tf.math.is_finite(out), out, tf.zeros_like(out))
         return out  # Solo la mitad positiva, 2 canales
 
@@ -74,17 +80,19 @@ class FM_red:
     def build_model(self):
         input_layer = keras.layers.Input(shape=self.input_shape)
 
-        x = input_layer
+        # Reduce per-step channel dim, then downsample time to keep tensors small
+        x = keras.layers.AveragePooling1D(pool_size=16, strides=4)(input_layer)
         x = keras.layers.Flatten()(x)
+        x = keras.layers.Dense(512, activation="relu")(x)
 
         # Ahora divido es sub capas de amplitud, frecuencia carrier e indice de modulacion
-        f_c = keras.layers.Dense(self.output_shape // 3, activation="relu", name="f_C")(
+        f_c = keras.layers.Dense(self.output_shape // 3, activation="sigmoid", name="f_C")(
             x
         )  # frecuencia carrier
-        A = keras.layers.Dense(self.output_shape // 3, activation="tanh", name="A")(
+        A = keras.layers.Dense(self.output_shape // 3, activation="sigmoid", name="A")(
             x
         )  # amplitud
-        f_m = keras.layers.Dense(self.output_shape // 3, activation="relu", name="f_M")(
+        f_m = keras.layers.Dense(self.output_shape // 3, activation="sigmoid", name="f_M")(
             x
         )
 
@@ -95,8 +103,7 @@ class FM_red:
 
     def compile(self, learning_rate=0.001):
         optimizer = keras.optimizers.Adam(learning_rate=learning_rate, clipnorm=1.0)
-        self.model.compile(optimizer=optimizer, loss="mse")
-        pass
+        self.model.compile(optimizer=optimizer, loss=combined_loss)
 
     def fit(self, x_train, y_train, epochs, batch_size=32, validation_data=None):
         callbacks = [keras.callbacks.TerminateOnNaN()]
@@ -115,18 +122,49 @@ class FM_red:
 
 
 def complex_mse(y_true, y_pred):
-    real = tf.math.real(y_true) - tf.math.real(y_pred)
-    imag = tf.math.imag(y_true) - tf.math.imag(y_pred)
-    return tf.square(real) + tf.square(imag)
+    real_diff = y_true[..., 0] - y_pred[..., 0]
+    imag_diff = y_true[..., 1] - y_pred[..., 1]
+    return tf.reduce_mean(tf.abs(real_diff) + tf.abs(imag_diff))
+
+def spectral_convergence_loss(y_true_complex, y_pred_complex):
+    # Convert back to complex numbers to calculate magnitude
+    y_true = tf.complex(y_true_complex[..., 0], y_true_complex[..., 1])
+    y_pred = tf.complex(y_pred_complex[..., 0], y_pred_complex[..., 1])
+
+    # Calculate magnitudes
+    mag_true = tf.abs(y_true)
+    mag_pred = tf.abs(y_pred)
+
+    # Frobenius norm of the difference in magnitudes
+    spectral_conv = tf.norm(mag_true - mag_pred, ord='euclidean', axis=-1) / (tf.norm(mag_true, ord='euclidean', axis=-1) + 1e-9)
+
+    return tf.reduce_mean(spectral_conv)
+
+def log_magnitude_loss(y_true_complex, y_pred_complex):
+    y_true = tf.complex(y_true_complex[..., 0], y_true_complex[..., 1])
+    y_pred = tf.complex(y_pred_complex[..., 0], y_pred_complex[..., 1])
+    
+    mag_true = tf.abs(y_true)
+    mag_pred = tf.abs(y_pred)
+    
+    # Add a small epsilon to avoid log(0)
+    log_mag_true = tf.math.log(mag_true + 1e-9)
+    log_mag_pred = tf.math.log(mag_pred + 1e-9)
+    
+    return tf.reduce_mean(tf.abs(log_mag_true - log_mag_pred))
+
+def combined_loss(y_true, y_pred):
+    # You can weigh the two losses if needed
+    alpha = 0.5 
+    sc_loss = spectral_convergence_loss(y_true, y_pred)
+    lm_loss = log_magnitude_loss(y_true, y_pred)
+    return alpha * sc_loss + (1.0 - alpha) * lm_loss
 
 
 if __name__ == "__main__":
     sr = FS
     input_shape = (58797, 2)
-    output_shape = 60
-
-    model = FM_red(input_shape, output_shape)
-    model.compile()
+    output_shape = 30
 
     # Load data for training
     path = "dataset_single.npz"
@@ -145,16 +183,15 @@ if __name__ == "__main__":
     y, sr = librosa.load(path_y, sr=FS, mono=True)
 
     Y = tf.signal.rfft(tf.cast(y, tf.float32))
-    mag = tf.math.abs(Y) + 1e-6
-    phase = tf.math.angle(Y)
 
-    log_mag = 20 * tf.math.log(tf.maximum(mag, 1e-6)) / tf.math.log(10.0)
-    min_val = tf.reduce_min(log_mag)
-    max_val = tf.reduce_max(log_mag)
-    norm_mag = (log_mag - min_val) / tf.maximum(max_val - min_val, 1e-6)
-    real_part = norm_mag * tf.cos(phase)
-    imag_part = norm_mag * tf.sin(phase)
-    y_stack = tf.stack([real_part, imag_part], axis=-1)
+    mag = tf.abs(Y)
+    global_max_mag = tf.reduce_max(mag)
+    global_max_mag = tf.maximum(global_max_mag, 1e-9)
+
+    real_norm = tf.math.real(Y)/ global_max_mag
+    imag_norm = tf.math.imag(Y)/ global_max_mag
+
+    y_stack = tf.stack([real_norm, imag_norm], axis=-1)
 
     # Igualar LARGO
     target_len = LARGO // 2 + 1
@@ -163,11 +200,15 @@ if __name__ == "__main__":
         if tf.shape(y_stack)[0] >= target_len
         else tf.pad(y_stack, [[0, target_len - tf.shape(y_stack)[0]], [0, 0]])
     )
+    y_train = y_stack[tf.newaxis, ...].numpy().astype(np.float32)
 
-    y_train = y_stack[tf.newaxis, ...].numpy().astype(np.float32)  # (1, target_len, 2)
     print(f"y_train shape: {y_train.shape}")
 
-    history = model.fit(x_train, y_train, epochs=100, batch_size=1)
+    model = FM_red(input_shape, output_shape)
+    model.compile()
+    model.model.get_layer("fft_layer").global_max.assign(global_max_mag)
+
+    history = model.fit(x_train, y_train, epochs=250, batch_size=1)
 
     model.save("modelo_fm.h5")
 

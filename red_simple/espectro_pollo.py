@@ -4,6 +4,12 @@ import os
 import tensorflow as tf
 import matplotlib.pyplot as plt
 
+def normalize_signal(signal, axis=None):
+    # Normalize along the given axis (per-sample if axis is specified)
+    min_val = tf.reduce_min(signal, axis=axis, keepdims=True)
+    max_val = tf.reduce_max(signal, axis=axis, keepdims=True)
+    return (signal - min_val) / tf.maximum(max_val - min_val, 1e-6)
+
 path = "/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/red_simple/Pollo_scream.mp3"
 
 y, sr = librosa.load(path, sr=44100, mono=True)
@@ -14,10 +20,7 @@ Y = tf.signal.rfft(tf.cast(y, tf.float32))
 mag = tf.math.abs(Y) + 1e-6
 phase = tf.math.angle(Y)
 
-log_mag = 20 * tf.math.log(tf.maximum(mag, 1e-6)) / tf.math.log(10.0)
-min_val = tf.reduce_min(log_mag)
-max_val = tf.reduce_max(log_mag)
-norm_mag = (log_mag - min_val) / tf.maximum(max_val - min_val, 1e-6)
+norm_mag = normalize_signal(mag)
 real_part = norm_mag * tf.cos(phase)
 imag_part = norm_mag * tf.sin(phase)
 

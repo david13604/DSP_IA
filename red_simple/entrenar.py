@@ -32,7 +32,7 @@ class FFTLayer(keras.layers.Layer):
         log_f_min = tf.math.log(f_min)
         log_f_max = tf.math.log(f_max)
 
-        f_M = tf.constant(440, dtype=tf.float32)
+        f_M = tf.constant(200, dtype=tf.float32)
 
         t = tf.range(largo, dtype=tf.float32) / tf.cast(fs, tf.float32)
         t = tf.reshape(t, (1, 1, -1))  # para broadcasting
@@ -56,7 +56,7 @@ class FFTLayer(keras.layers.Layer):
             axis=1,
         )
 
-        fft_result = tf.signal.rfft(tf.cast(fm_signal, tf.float32))
+        fft_result = tf.signal.rfft(tf.cast(fm_signal, tf.float32), fft_length=[largo])
 
         mag = tf.abs(fft_result)
         global_max_mag = tf.reduce_max(mag)
@@ -91,16 +91,17 @@ class FM_red:
         input_layer = keras.layers.Input(shape=self.input_shape)
 
         # Stronger downsampling to keep GRU tractable
-        x = keras.layers.AveragePooling1D(pool_size=16, strides=16)(input_layer)
+        x = keras.layers.AveragePooling1D(pool_size=8, strides=8)(input_layer)
         #x = keras.layers.AveragePooling1D(pool_size=8, strides=8)(x)
 
         # Recurrent encoder over time
-        x = keras.layers.Bidirectional(keras.layers.GRU(128, return_sequences=True))(x)
+        x = keras.layers.GRU(32, return_sequences=True)(x)
         x = keras.layers.GaussianNoise(0.01)(x)  # optional stabilization
-        x = keras.layers.Bidirectional(keras.layers.GRU(64, return_sequences=False))(x)
+        x = keras.layers.GRU(16, return_sequences=False)(x)
 
         # Small MLP head
-        x = keras.layers.Dense(128, activation="relu")(x)
+        x = keras.layers.Dense(512, activation="relu")(x)
+        #x = keras.layers.Dense(256, activation="relu")(x)
 
         # Ahora divido es sub capas de amplitud, frecuencia carrier e indice de modulacion
         f_c = keras.layers.Dense(
@@ -120,8 +121,8 @@ class FM_red:
         output_layer = FFTLayer(name="fft_layer")([f_c, A, beta])
         self.model = keras.models.Model(inputs=input_layer, outputs=output_layer)
 
-    def compile(self, learning_rate=0.001):
-        optimizer = keras.optimizers.Adam(learning_rate=learning_rate, amsgrad=True)
+    def compile(self, learning_rate=0.0001):
+        optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
         self.model.compile(optimizer=optimizer, loss=complex)
 
     def fit(self, x_train, y_train, epochs, batch_size=32, validation_data=None):
@@ -143,54 +144,13 @@ class FM_red:
 def complex(y_true, y_pred):
     real_diff = y_true[..., 0] - y_pred[..., 0]
     imag_diff = y_true[..., 1] - y_pred[..., 1]
-    return tf.reduce_mean(tf.abs(real_diff)) + tf.reduce_mean(tf.abs(imag_diff)) + tf.reduce_mean(
-        tf.abs(tf.complex(real_diff, imag_diff))
-    )
-
-
-def spectral_convergence_loss(y_true_complex, y_pred_complex):
-    # Convert back to complex numbers to calculate magnitude
-    y_true = tf.complex(y_true_complex[..., 0], y_true_complex[..., 1])
-    y_pred = tf.complex(y_pred_complex[..., 0], y_pred_complex[..., 1])
-
-    # Calculate magnitudes
-    mag_true = tf.abs(y_true)
-    mag_pred = tf.abs(y_pred)
-
-    # Frobenius norm of the difference in magnitudes
-    spectral_conv = tf.norm(mag_true - mag_pred, ord="euclidean", axis=-1) / (
-        tf.norm(mag_true, ord="euclidean", axis=-1) + 1e-9
-    )
-
-    return tf.reduce_mean(spectral_conv)
-
-
-def log_magnitude_loss(y_true_complex, y_pred_complex):
-    y_true = tf.complex(y_true_complex[..., 0], y_true_complex[..., 1])
-    y_pred = tf.complex(y_pred_complex[..., 0], y_pred_complex[..., 1])
-
-    mag_true = tf.abs(y_true)
-    mag_pred = tf.abs(y_pred)
-
-    # Add a small epsilon to avoid log(0)
-    log_mag_true = tf.math.log(mag_true + 1e-9)
-    log_mag_pred = tf.math.log(mag_pred + 1e-9)
-
-    return tf.reduce_mean(tf.abs(log_mag_true - log_mag_pred))
-
-
-def combined_loss(y_true, y_pred):
-    # You can weigh the two losses if needed
-    alpha = 0.5
-    sc_loss = spectral_convergence_loss(y_true, y_pred)
-    lm_loss = log_magnitude_loss(y_true, y_pred)
-    return alpha * sc_loss + (1.0 - alpha) * lm_loss
+    return tf.reduce_sum(tf.abs(real_diff)) + tf.reduce_sum(tf.abs(imag_diff))
 
 
 if __name__ == "__main__":
     sr = FS
     input_shape = (58797, 2)
-    output_shape = 6
+    output_shape = 15
 
     # Load data for training
     path = "dataset_single.npz"
@@ -208,7 +168,16 @@ if __name__ == "__main__":
 
     y, sr = librosa.load(path_y, sr=FS, mono=True)
 
-    Y = tf.signal.rfft(tf.cast(y, tf.float32))
+    # Make target FFT use the same length as the model (LARGO)
+    y_tf = tf.convert_to_tensor(y, dtype=tf.float32)
+    n = tf.shape(y_tf)[0]
+    start = tf.maximum((n - LARGO) // 2, 0)  # center crop if longer
+    end = tf.minimum(start + LARGO, n)
+    y_seg = y_tf[start:end]
+    y_seg = tf.pad(y_seg, [[0, tf.maximum(LARGO - tf.shape(y_seg)[0], 0)]])  # zero-pad if shorter
+
+    # RFFT on exactly LARGO samples so bins align
+    Y = tf.signal.rfft(y_seg, fft_length=[LARGO])
 
     mag = tf.abs(Y)
     global_max_mag = tf.reduce_max(mag)
@@ -218,14 +187,6 @@ if __name__ == "__main__":
     imag_norm = tf.math.imag(Y) / global_max_mag
 
     y_stack = tf.stack([real_norm, imag_norm], axis=-1)
-
-    # Igualar LARGO
-    target_len = LARGO // 2 + 1
-    y_stack = (
-        y_stack[:target_len]
-        if tf.shape(y_stack)[0] >= target_len
-        else tf.pad(y_stack, [[0, target_len - tf.shape(y_stack)[0]], [0, 0]])
-    )
     y_train = y_stack[tf.newaxis, ...].numpy().astype(np.float32)
 
     print(f"y_train shape: {y_train.shape}")
@@ -233,7 +194,7 @@ if __name__ == "__main__":
     model = FM_red(input_shape, output_shape)
     model.compile()
 
-    history = model.fit(x_train, y_train, epochs=20, batch_size=1)
+    history = model.fit(x_train, y_train, epochs=50, batch_size=1)
 
     model.save("modelo_fm.h5")
 
@@ -245,31 +206,42 @@ if __name__ == "__main__":
     plt.show()
 
     # Plot
-    plt.figure(figsize=(10, 4))
-    plt.subplot(3, 1, 1)
-    # Plot real and imaginary parts of the FFT
-    # real
+    plt.figure(figsize=(10, 6))
+
+    # Predict once
     y_pred = model.model.predict(x_train)[0]
-    plt.plot(y_train[0, :, 0], label="Real Part")
-    plt.plot(y_pred[:, 0], label="Predicted Real Part")
-    plt.grid()
-    plt.legend()
-    # imaginary
+
+    # Frequency axis for rFFT bins
+    freqs = np.fft.rfftfreq(LARGO, d=1.0/FS)
+
+    # Magnitudes (numpy)
+    true_real = y_train[0, :, 0]
+    true_imag = y_train[0, :, 1]
+    pred_real = y_pred[:, 0]
+    pred_imag = y_pred[:, 1]
+
+    true_mag = np.sqrt(true_real**2 + true_imag**2)
+    pred_mag = np.sqrt(pred_real**2 + pred_imag**2)
+
+    # Plot real
+    plt.subplot(3, 1, 1)
+    plt.plot(freqs, true_real, label="Real")
+    plt.plot(freqs, pred_real, label="Pred Real", alpha=0.8)
+    plt.xlim(0, 10000)  # focus band (adjust as needed)
+    plt.grid(); plt.legend()
+
+    # Plot imag
     plt.subplot(3, 1, 2)
-    plt.plot(y_train[0, :, 1], label="Imaginary Part")
-    plt.plot(y_pred[:, 1], label="Predicted Imaginary Part")
-    plt.legend()
-    plt.grid()
-    # magnitude
-    magnitude = tf.sqrt(
-        tf.square(y_train[0, :, 0]) + tf.square(y_train[0, :, 1])
-    )
-    predicted_magnitude = tf.sqrt(
-        tf.square(y_pred[:, 0]) + tf.square(y_pred[:, 1])
-    )
+    plt.plot(freqs, true_imag, label="Imag")
+    plt.plot(freqs, pred_imag, label="Pred Imag", alpha=0.8)
+    plt.xlim(0, 10000)
+    plt.grid(); plt.legend()
+
+    # Plot magnitude
     plt.subplot(3, 1, 3)
-    plt.plot(magnitude, label="Magnitude")
-    plt.plot(predicted_magnitude, label="Predicted Magnitude")
-    plt.legend()
-    plt.grid()
+    plt.plot(freqs, true_mag, label="|Y|")
+    plt.plot(freqs, pred_mag, label="|Y_pred|", alpha=0.8)
+    plt.xlim(0, 10000)
+    plt.grid(); plt.legend()
+    plt.tight_layout()
     plt.show()

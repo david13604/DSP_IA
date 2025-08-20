@@ -8,7 +8,7 @@ import librosa
 
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
-LARGO = 12407 * 2
+LARGO = 58796 * 2
 FS = 44100
 
 
@@ -126,15 +126,20 @@ class FM_red:
         self.model.compile(optimizer=optimizer, loss=complex)
 
     def fit(self, x_train, y_train, epochs, batch_size=32, validation_data=None):
-        callbacks = [keras.callbacks.TerminateOnNaN()]
+        callbacks = [
+            keras.callbacks.TerminateOnNaN(),
+            keras.callbacks.ReduceLROnPlateau(monitor="loss", factor=0.5, patience=15, min_lr=1e-6, verbose=1),
+            keras.callbacks.EarlyStopping(monitor="loss", patience=50, restore_best_weights=True, verbose=1),
+        ]
         history = self.model.fit(
             x_train,
             y_train,
             epochs=epochs,
             batch_size=batch_size,
+            callbacks=callbacks,
         )
         return history
-
+    
     def save(self, path="modelo_fm.h5"):
         self.model.save(path)
 
@@ -150,7 +155,7 @@ def complex(y_true, y_pred):
 if __name__ == "__main__":
     sr = FS
     input_shape = (58797, 2)
-    output_shape = 15
+    output_shape = 30
 
     # Load data for training
     path = "dataset_single.npz"
@@ -162,9 +167,8 @@ if __name__ == "__main__":
 
     print(f"x_train shape: {x_train.shape}")
 
-    path_y = (
-        "/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/red_simple/Pollo_scream.mp3"
-    )
+    #path_y = ("/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/red_simple/Pollo_scream.mp3")
+    path_y = (r"C:\Users\usuario\Desktop\DSP_IA_local\red_simple\Pollo_scream.mp3")
 
     y, sr = librosa.load(path_y, sr=FS, mono=True)
 
@@ -194,7 +198,7 @@ if __name__ == "__main__":
     model = FM_red(input_shape, output_shape)
     model.compile()
 
-    history = model.fit(x_train, y_train, epochs=50, batch_size=1)
+    history = model.fit(x_train, x_train, epochs=50, batch_size=1)
 
     model.save("modelo_fm.h5")
 

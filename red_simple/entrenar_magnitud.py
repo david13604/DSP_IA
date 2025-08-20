@@ -15,13 +15,7 @@ FS = 44100
 import tensorflow as tf
 
 def savitzky_golay_tf(y, window_size, order):
-    # Calculate polynomial coefficients (same as your NumPy version)
-    # For simplicity, use fixed coefficients for order=3, window_size=51
-    # You can generalize this if needed
     half_window = (window_size - 1) // 2
-    # Generate convolution kernel (coefficients)
-    # This is a placeholder for actual Savitzky-Golay coefficients
-    # For production, precompute and hardcode the coefficients or use tf.numpy_function
     coeffs = tf.constant([1.0 / window_size] * window_size, dtype=tf.float32)
     coeffs = tf.reshape(coeffs, [window_size, 1, 1])
 

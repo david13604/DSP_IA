@@ -12,7 +12,15 @@ os.environ["KERAS_BACKEND"] = "tensorflow"
 LARGO = 12407 * 2
 FS = 44100
 
-import tensorflow as tf
+window_size = 51
+order = 3
+
+def topfig():
+    figmgr = plt.get_current_fig_manager()
+    figmgr.canvas.manager.window.raise_()
+    geom = figmgr.window.geometry()
+    x,y,dx,dy = geom.getRect()
+    figmgr.window.setGeometry(10, 10, dx, dy)
 
 def savitzky_golay_tf(y, window_size, order):
     half_window = (window_size - 1) // 2
@@ -41,18 +49,16 @@ class FFTLayer(keras.layers.Layer):
         log_f_min = tf.math.log(f_min)
         log_f_max = tf.math.log(f_max)
 
-        f_M = tf.constant(223, dtype=tf.float32)
+        f_M = tf.constant(101, dtype=tf.float32)
 
         t = tf.range(largo, dtype=tf.float32) / tf.cast(fs, tf.float32)
         t = tf.reshape(t, (1, 1, -1))  # para broadcasting
 
-        margin = tf.constant(0.95, dtype=tf.float32)  # keep away from hard edges
-        n_carriers = tf.cast(tf.shape(A)[1], tf.float32)
-        A = tf.nn.tanh(A) / tf.sqrt(n_carriers + 1e-8)
+        # Limit f_C
+        #f_C = tf.clip_by_value(f_C, log_f_min, log_f_max)
 
-        s_c = (tf.tanh(f_C) * margin + 1.0) * 0.5  # in (0.025, 0.975)
-        log_f_C = log_f_min + s_c * (log_f_max - log_f_min)
-        f_C = tf.exp(log_f_C)
+        n_carriers = tf.cast(tf.shape(A)[1], tf.float32)
+        A = tf.nn.tanh(A) / tf.sqrt(n_carriers)
 
         sorted_indices = tf.argsort(f_C, axis=1)
         f_C = tf.gather(f_C, sorted_indices, batch_dims=1)
@@ -79,9 +85,8 @@ class FFTLayer(keras.layers.Layer):
         fft_result = tf.signal.rfft(tf.cast(fm_signal, tf.float32), fft_length=[largo])
 
         # Predict raw magnitude
-        mag = tf.abs(fft_result) + 1e-9
+        mag = tf.abs(fft_result)
         mag = tf.where(tf.math.is_finite(mag), mag, tf.zeros_like(mag))
-        mag = savitzky_golay_tf(mag, 51, 3)
         return mag
 
 class FM_red:
@@ -89,6 +94,7 @@ class FM_red:
         self,
         input_shape,
         output_shape,
+        max
     ) -> None:
         self.input_shape = input_shape
         self.output_shape = output_shape
@@ -111,20 +117,18 @@ class FM_red:
             self.output_shape // 3,
             activation=None,
             name="f_C",
-            bias_initializer=keras.initializers.Constant(0.0),
+            kernel_initializer=keras.initializers.Zeros(),
+            bias_initializer=keras.initializers.Constant(750.0),
         )(x)
         A = keras.layers.Dense(
             self.output_shape // 3,
             activation=None,
             name="A",
-            kernel_initializer=keras.initializers.RandomNormal(stddev=1e-3),
-            bias_initializer="zeros",
         )(x)
         beta = keras.layers.Dense(
             self.output_shape // 3,
             activation=None,
-            name="beta",
-            bias_initializer=keras.initializers.Constant(-2.0),  # softplus(-2) ≈ 0.13
+            name="beta"
         )(x)
 
         print(f"f_C shape: {f_c.shape}, beta shape: {beta.shape}, A shape: {A.shape}")
@@ -138,10 +142,16 @@ class FM_red:
         self.model.compile(optimizer=optimizer, loss=mag_loss)
 
     def fit(self, x_train, y_train, epochs, batch_size=1, validation_data=None):
+        y_train_np = tf.squeeze(y_train, axis=0).numpy()
+
+        freqs = np.fft.rfftfreq(LARGO, d=1.0/FS)
+        scale = np.max(y_train_np)
+        plot_callback = SpectrumPlotCallback(y_train, freqs, scale)
         callbacks = [
             keras.callbacks.TerminateOnNaN(),
             keras.callbacks.ReduceLROnPlateau(monitor="loss", factor=0.5, patience=15, min_lr=1e-6, verbose=1),
-            keras.callbacks.EarlyStopping(monitor="loss", patience=50, restore_best_weights=True, verbose=1),
+            keras.callbacks.EarlyStopping(monitor="loss", patience=250, restore_best_weights=False, verbose=1),
+            plot_callback,
         ]
         history = self.model.fit(
             x_train,
@@ -156,8 +166,34 @@ class FM_red:
         self.model.save(path)
         print(f"Model saved to {path}")
 
+class SpectrumPlotCallback(keras.callbacks.Callback):
+    def __init__(self, x_sample, freqs, scale):
+        super().__init__()
+        self.x_sample = x_sample
+        self.freqs = freqs
+        self.scale = scale
+        self.pause = 0.5
+
+    def on_epoch_end(self, epoch, logs=None):
+        y_pred = self.model.predict(self.x_sample, verbose=0)[0]
+        y_train_np = tf.squeeze(y_train, axis=0).numpy()
+        plt.figure(figsize=(10, 4))
+        #plt.plot(self.freqs, y_pred/self.scale, label=f"|Y_pred| epoch {epoch+1}")
+        plt.plot(self.freqs, y_train_np/self.scale, label="|Y_train|")
+        plt.plot(self.freqs, tf.abs(savitzky_golay(y_pred, window_size, order))/self.scale, label="|Y_pred smooth|")
+        plt.xlim(0, 10000)
+        plt.grid()
+        plt.legend()
+        plt.title(f"Spectrum after epoch {epoch+1}")
+        plt.tight_layout()
+        topfig()
+        plt.show(block=False)
+        plt.pause(self.pause)
+        plt.close()
+
 def mag_loss(y_true, y_pred):
     # L1
+    y_pred = tf.abs(savitzky_golay_tf(y_pred, window_size, order))
     return tf.reduce_mean(tf.square(y_true - y_pred))
 
 
@@ -165,36 +201,28 @@ if __name__ == "__main__":
     sr = FS
     output_shape = 30
 
-    # Load data for training
-    path = "dataset_single.npz"
-
-    x_train = np.load(path)["X"]
-    # Magnitude
-    x_train = np.abs(x_train).astype(np.float32)
-    x_train = x_train[..., np.newaxis]       
-    x_train = np.expand_dims(x_train, axis=0)
-
     path_y = (
         "/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/red_simple/Pollo_scream.mp3"
     )
 
-    input_shape = x_train.shape[1:]
-    print(f"x_train shape: {x_train.shape}")
-
     y, sr = librosa.load(path_y, sr=44100, mono=True)
 
     Y = tf.signal.rfft(tf.cast(y, tf.float32))
-    mag = tf.math.abs(Y) + 1e-6
+    mag = tf.math.abs(Y)
 
-    smooth_mag = savitzky_golay(mag, 51, 3)
+    smooth_mag = tf.abs(savitzky_golay(mag, window_size, order))
     y_train = tf.expand_dims(smooth_mag, axis=0)
+
+    max = tf.reduce_max(mag)
+
+    input_shape = y_train.shape[1:]
 
     print(f"y_train shape (magnitude only): {y_train.shape}")
 
-    model = FM_red(input_shape, output_shape)
+    model = FM_red(input_shape, output_shape, max)
     model.compile()
 
-    history = model.fit(x_train, y_train, epochs=1000, batch_size=1)
+    history = model.fit(y_train, y_train, epochs=2000, batch_size=1)
 
     model.save("modelo_fm.h5")
 
@@ -206,13 +234,15 @@ if __name__ == "__main__":
     plt.show()
 
     # Predict once
-    y_pred = model.model.predict(x_train, verbose=0)[0]
+    y_pred = model.model.predict(y_train, verbose=0)[0]
+    y_pred = np.array(y_pred)
     freqs = np.fft.rfftfreq(LARGO, d=1.0/FS)
     y_train_np = tf.squeeze(y_train, axis=0).numpy()
-    scale = np.max(y_train_np) + 1e-9
+    scale = np.max(y_train_np)
     plt.figure(figsize=(10, 4))
     plt.plot(freqs, y_train_np/scale, label="|Y| (target)")
     plt.plot(freqs, y_pred/scale, label="|Y_pred|")
+    plt.plot(freqs, tf.abs(savitzky_golay(y_pred, window_size, order))/scale, label="|Y_pred smooth|")
     plt.xlim(0, 10000)
     plt.grid(); plt.legend()
     plt.tight_layout()

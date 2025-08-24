@@ -5,6 +5,9 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 from math import factorial
 
+if not hasattr(np, "mat"):  # NumPy >= 2.0
+    np.mat = np.asmatrix
+
 def savitzky_golay(y, window_size, order, deriv=0, rate=1):
     r"""Smooth (and optionally differentiate) data with a Savitzky-Golay filter.
     The Savitzky-Golay filter removes high frequency noise from data.

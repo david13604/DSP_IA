@@ -1,13 +1,14 @@
-import keras
 import os
+os.environ["KERAS_BACKEND"] = "tensorflow"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 from scipy.signal import stft
 import numpy as np
 import tensorflow as tf
+from tensorflow import keras
 import matplotlib.pyplot as plt
 import librosa
 from espectro_pollo import savitzky_golay
 
-os.environ["KERAS_BACKEND"] = "tensorflow"
 
 LARGO = 12407 * 2
 FS = 44100
@@ -15,26 +16,114 @@ FS = 44100
 window_size = 51
 order = 3
 
-def topfig():
+
+def peak_envelope_1d(mag_1d: tf.Tensor):
+    """
+    Compute linear-interpolated peak envelope for a 1D magnitude vector.
+    Falls back to original magnitudes if fewer than 2 peaks.
+    """
+    mag_1d = tf.convert_to_tensor(mag_1d, dtype=tf.float32)  # shape (N,)
+
+    # Neighbor compare (plateau allowed)
+    left = tf.concat([mag_1d[:1], mag_1d[:-1]], axis=0)
+    right = tf.concat([mag_1d[1:], mag_1d[-1:]], axis=0)
+    peak_mask = (mag_1d >= left) & (mag_1d >= right)
+
+    peaks = tf.where(peak_mask)[:, 0]  # indices of local maxima
+    # Ensure endpoints
+    n = tf.shape(mag_1d)[0]
+    endpoints = tf.convert_to_tensor([0, n - 1], dtype=tf.int64)
+    peaks = tf.concat([peaks, endpoints], axis=0)
+    peaks = tf.sort(tf.unique(peaks).y)
+
+    # Need at least two distinct peaks for interpolation
+    num_peaks = tf.shape(peaks)[0]
+    def single_peak():
+        return mag_1d  # Cannot interpolate, return original
+    
+    def interpolate():
+        peak_vals = tf.gather(mag_1d, peaks)
+        x_full = tf.range(n, dtype=tf.int32)
+
+        # For each x, find right peak index
+        right_idx = tf.searchsorted(tf.cast(peaks, tf.int32), x_full, side="right")
+        right_idx = tf.clip_by_value(right_idx, 1, tf.shape(peaks)[0] - 1)
+        left_idx = right_idx - 1
+
+        x0 = tf.cast(tf.gather(peaks, left_idx), tf.float32)
+        x1 = tf.cast(tf.gather(peaks, right_idx), tf.float32)
+        y0 = tf.gather(peak_vals, left_idx)
+        y1 = tf.gather(peak_vals, right_idx)
+
+        denom = tf.where(x1 > x0, x1 - x0, tf.ones_like(x1))
+        t = tf.where(x1 > x0, (tf.cast(x_full, tf.float32) - x0) / denom, 0.0)
+        return y0 + t * (y1 - y0)
+
+    return tf.cond(num_peaks < 2, single_peak, interpolate)
+
+def peak_envelope_tf(mag):
+    """
+    Batch-aware wrapper: applies peak_envelope_1d along the last axis.
+    Accepts shapes:
+      (N,) -> (N,)
+      (B, N) -> (B, N)
+      (..., N) -> (..., N)
+    """
+    mag = tf.convert_to_tensor(mag, dtype=tf.float32)
+    rank = tf.rank(mag)
+    def rank1():
+        return peak_envelope_1d(mag)
+    def higher():
+        n = tf.shape(mag)[-1]
+        flat = tf.reshape(mag, (-1, n))  # (M, N)
+        env = tf.map_fn(lambda row: peak_envelope_1d(row),
+                        flat,
+                        fn_output_signature=tf.float32)
+        return tf.reshape(env, tf.shape(mag))
+    return tf.cond(tf.equal(rank, 1), rank1, higher)
+
+def topfig(x=10, y=10):
     figmgr = plt.get_current_fig_manager()
-    figmgr.canvas.manager.window.raise_()
-    geom = figmgr.window.geometry()
-    x,y,dx,dy = geom.getRect()
-    figmgr.window.setGeometry(10, 10, dx, dy)
 
-def savitzky_golay_tf(y, window_size, order):
-    half_window = (window_size - 1) // 2
-    coeffs = tf.constant([1.0 / window_size] * window_size, dtype=tf.float32)
-    coeffs = tf.reshape(coeffs, [window_size, 1, 1])
+    # Try to get current size (fallback if not available)
+    try:
+        w, h = figmgr.canvas.get_width_height()
+    except Exception:
+        w, h = 800, 600
 
-    # Pad the signal at both ends
-    y = tf.reshape(y, [1, -1, 1])  # [batch, width, channels]
-    y_padded = tf.pad(y, [[0, 0], [half_window, half_window], [0, 0]], mode="REFLECT")
+    # Tkinter (TkAgg)
+    if hasattr(figmgr, "window") and hasattr(figmgr.window, "geometry"):
+        try:
+            figmgr.window.geometry(f"{w}x{h}+{x}+{y}")
+            # Replacement for former: figmgr.canvas.manager.window.raise_()
+            if hasattr(figmgr.window, "lift"):
+                figmgr.window.lift()
+            # Briefly set topmost to bring to front (then revert)
+            if hasattr(figmgr.window, "attributes"):
+                figmgr.window.attributes("-topmost", True)
+                figmgr.window.after(50, lambda: figmgr.window.attributes("-topmost", False))
+        except Exception:
+            pass
 
-    # Apply convolution
-    y_smooth = tf.nn.conv1d(y_padded, coeffs, stride=1, padding="VALID")
-    y_smooth = tf.squeeze(y_smooth, axis=[-1])
-    return y_smooth
+    # Qt (Qt5Agg / QtAgg)
+    elif hasattr(figmgr, "window") and hasattr(figmgr.window, "move"):
+        try:
+            figmgr.window.move(x, y)
+            if hasattr(figmgr.window, "raise_"):
+                figmgr.window.raise_()
+            if hasattr(figmgr.window, "activateWindow"):
+                figmgr.window.activateWindow()
+        except Exception:
+            pass
+
+    # WX
+    elif hasattr(figmgr, "frame") and hasattr(figmgr.frame, "SetPosition"):
+        try:
+            figmgr.frame.SetPosition((x, y))
+            if hasattr(figmgr.frame, "Raise"):
+                figmgr.frame.Raise()
+        except Exception:
+            pass
 
 class FFTLayer(keras.layers.Layer):
     def __init__(self, **kwargs):
@@ -124,11 +213,15 @@ class FM_red:
             self.output_shape // 3,
             activation=None,
             name="A",
+            kernel_initializer=keras.initializers.Zeros(),
+            bias_initializer=keras.initializers.Constant(1.0),
         )(x)
         beta = keras.layers.Dense(
             self.output_shape // 3,
             activation=None,
-            name="beta"
+            name="beta",
+            kernel_initializer=keras.initializers.Zeros(),
+            bias_initializer=keras.initializers.Constant(0.0),
         )(x)
 
         print(f"f_C shape: {f_c.shape}, beta shape: {beta.shape}, A shape: {A.shape}")
@@ -149,7 +242,7 @@ class FM_red:
         plot_callback = SpectrumPlotCallback(y_train, freqs, scale)
         callbacks = [
             keras.callbacks.TerminateOnNaN(),
-            keras.callbacks.ReduceLROnPlateau(monitor="loss", factor=0.5, patience=15, min_lr=1e-6, verbose=1),
+            keras.callbacks.ReduceLROnPlateau(monitor="loss", factor=0.5, patience=25, min_lr=1e-6, verbose=1),
             keras.callbacks.EarlyStopping(monitor="loss", patience=250, restore_best_weights=False, verbose=1),
             plot_callback,
         ]
@@ -175,12 +268,21 @@ class SpectrumPlotCallback(keras.callbacks.Callback):
         self.pause = 0.5
 
     def on_epoch_end(self, epoch, logs=None):
-        y_pred = self.model.predict(self.x_sample, verbose=0)[0]
-        y_train_np = tf.squeeze(y_train, axis=0).numpy()
+        # Predict
+        y_pred = self.model.predict(self.x_sample, verbose=0)[0]          # (N,)
+        # True target (same as input in this setup)
+        y_true = tf.squeeze(self.x_sample, axis=0).numpy()                # (N,)
+        # Envelope of prediction
+        y_pred_env = tf.abs(peak_envelope_tf(y_pred))
+        # Ensure shapes match freq axis
+        if y_true.ndim > 1:
+            y_true = np.squeeze(y_true)
+        if y_pred_env.ndim > 1:
+            y_pred_env = np.squeeze(y_pred_env)
         plt.figure(figsize=(10, 4))
         #plt.plot(self.freqs, y_pred/self.scale, label=f"|Y_pred| epoch {epoch+1}")
-        plt.plot(self.freqs, y_train_np/self.scale, label="|Y_train|")
-        plt.plot(self.freqs, tf.abs(savitzky_golay(y_pred, window_size, order))/self.scale, label="|Y_pred smooth|")
+        plt.plot(self.freqs, y_true/self.scale, label="|Y_train|")
+        plt.plot(self.freqs, y_pred_env/self.scale, label="|Y_pred envelope|")
         plt.xlim(0, 10000)
         plt.grid()
         plt.legend()
@@ -193,16 +295,16 @@ class SpectrumPlotCallback(keras.callbacks.Callback):
 
 def mag_loss(y_true, y_pred):
     # L1
-    y_pred = tf.abs(savitzky_golay_tf(y_pred, window_size, order))
+    y_pred = tf.abs(peak_envelope_tf(y_pred))
     return tf.reduce_mean(tf.square(y_true - y_pred))
 
 
 if __name__ == "__main__":
     sr = FS
-    output_shape = 30
+    output_shape = 3
 
     path_y = (
-        "/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/red_simple/Pollo_scream.mp3"
+        "/mnt/c/Users/matth/Desktop/Other/DSP_IA/red_simple/Pollo_scream.mp3"
     )
 
     y, sr = librosa.load(path_y, sr=44100, mono=True)
@@ -242,7 +344,7 @@ if __name__ == "__main__":
     plt.figure(figsize=(10, 4))
     plt.plot(freqs, y_train_np/scale, label="|Y| (target)")
     plt.plot(freqs, y_pred/scale, label="|Y_pred|")
-    plt.plot(freqs, tf.abs(savitzky_golay(y_pred, window_size, order))/scale, label="|Y_pred smooth|")
+    plt.plot(freqs, tf.abs(peak_envelope_tf(y_pred))/scale, label="|Y_pred smooth|")
     plt.xlim(0, 10000)
     plt.grid(); plt.legend()
     plt.tight_layout()

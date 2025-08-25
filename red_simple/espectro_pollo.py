@@ -78,16 +78,16 @@ def savitzky_golay(y, window_size, order, deriv=0, rate=1):
     y = np.concatenate((firstvals, y, lastvals))
     return np.convolve( m[::-1], y, mode='valid')
 
-path = "/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/red_simple/Pollo_scream.mp3"
-
-y, sr = librosa.load(path, sr=44100, mono=True)
-
-Y = tf.signal.rfft(tf.cast(y, tf.float32))
-mag = tf.math.abs(Y) + 1e-6
-
-smooth_mag = savitzky_golay(mag, 51, 3)
 
 if __name__ == "__main__":
+    path = "/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/red_simple/Pollo_scream.mp3"
+
+    y, sr = librosa.load(path, sr=44100, mono=True)
+
+    Y = tf.signal.rfft(tf.cast(y, tf.float32))
+    mag = tf.math.abs(Y) + 1e-6
+
+    smooth_mag = savitzky_golay(mag, 51, 3)
     # plot
     plt.figure(figsize=(10, 4))
     plt.plot(mag)

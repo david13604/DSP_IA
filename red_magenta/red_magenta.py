@@ -86,8 +86,8 @@ class Autoencder:
         z = self.encoder(mfcc_in)                           # (B,T,16)
         harmonics, noise = self.decoder([f_in, l_in, z])    # (B,T,101), (B,T,65)
 
-        # Empaquetamos lo necesario para la loss: [harmonics, f_in, l_in] → (B,T,101+1+1) = (B,T,103)
-        pack = keras.layers.Concatenate(axis=-1, name="pack_for_loss")([harmonics, f_in, l_in])
+        # Empaquetamos lo necesario para la loss: [harmonics,noise, f_in, l_in] → (B,T,101+1+1) = (B,T,103)
+        pack = keras.layers.Concatenate(axis=-1, name="pack_for_loss")([harmonics, noise, f_in, l_in])
 
         # Este modelo tiene UNA salida "pack" que la loss sabe desempaquetar
         self.autoencoder = keras.Model([mfcc_in, f_in, l_in], pack, name="autoencoder")
@@ -97,7 +97,7 @@ class Autoencder:
     # ------------------------
     # Síntesis aditiva (vectorizada, con fase acumulada)
     # ------------------------
-    def additive_synth(self, f0, loudness, harmonics):
+    def additive_synth(self, f0, loudness, harmonics, noise):
         """
         f0:     (B, T, 1)
         loud:   (B, T, 1)
@@ -114,6 +114,7 @@ class Autoencder:
         f0_up   = tf.repeat(f0,   repeats=reps, axis=1)[:, :N, :]        # (B,N,1)
         loud_up = tf.repeat(loudness, repeats=reps, axis=1)[:, :N, :]    # (B,N,1)
         harm_up = tf.repeat(harmonics, repeats=reps, axis=1)[:, :N, :]   # (B,N,K)
+        noise_up = tf.repeat(noise, repeats=reps, axis=1)[:, :N, :]     # (B,N,65)
 
         # Fase acumulada: phi[n] = sum_{m<=n} 2*pi*f0[m]/fs
         omega = 2.0 * tf.constant(np.pi, tf.float32) * f0_up[..., 0] / float(self.sample_rate)  # (B,N)
@@ -126,7 +127,70 @@ class Autoencder:
         # Señal por armónico y suma final
         phase = phi * ks                             # (B,N,K)
         sig = loud_up * harm_up * tf.sin(phase)     # (B,N,K)
-        audio = tf.reduce_sum(sig, axis=-1)         # (B,N)
+        audio_harm = tf.reduce_sum(sig, axis=-1)         # (B,N)
+
+        # Ruido
+        # --- Parámetros básicos ---
+        frame_length = 512     # igual o menor que 1024 (STFT)
+        frame_step   = 256     # hop de 256 muestras
+        n_fft_bins   = 65      # igual que la salida del decoder
+        n_frames_est = tf.cast(tf.math.ceil(tf.cast(N, tf.float32) / frame_step), tf.int32)
+
+        # --- Ruido blanco (B, N) ---
+        white = tf.random.uniform(tf.shape(audio_harm), -1.0, 1.0)
+
+        # --- STFT del ruido (B, F, T) ---
+        noise_stft = tf.signal.stft(
+            white,
+            frame_length=frame_length,
+            frame_step=frame_step,
+            fft_length=frame_length,
+            window_fn=tf.signal.hann_window,
+            pad_end=True
+        )  # (B, F, T)
+
+        mag = tf.abs(noise_stft)
+        phase = tf.math.angle(noise_stft)
+        F = tf.shape(mag)[1]
+        T_frames = tf.shape(mag)[2]
+
+        # --- Filtro del decoder ---
+        # Ajustamos el tamaño temporal (interpolación si hace falta)
+        noise_t = noise  # (B, T_feat, 65)
+        noise_t = tf.image.resize(noise_t[..., tf.newaxis], [T_frames, n_fft_bins], method='bilinear')[..., 0]
+
+        # Normalizar el filtro y expandir a los bins reales de la FFT
+        filt = noise_t / (1e-6 + tf.reduce_max(noise_t, axis=-1, keepdims=True))  # (B, T_frames, 65)
+        filt = tf.transpose(filt, perm=[0, 2, 1])  # (B, 65, T_frames)
+        filt = tf.image.resize(filt[..., tf.newaxis], [F, T_frames], method='bilinear')[..., 0]  # (B, F, T)
+
+        # --- Aplicar magnitud del filtro ---
+        mag_filtered = mag * filt
+
+        # --- Reconstrucción del espectro complejo ---
+        noise_stft_filt = tf.complex(mag_filtered * tf.cos(phase), mag_filtered * tf.sin(phase))
+
+        # --- Inversa de STFT (reconstrucción temporal) ---
+        noise_filtered = tf.signal.inverse_stft(
+            noise_stft_filt,
+            frame_length=frame_length,
+            frame_step=frame_step,
+            window_fn=tf.signal.hann_window
+        )  # (B, N')
+
+        # Recortar/padear a longitud exacta
+        Nf = tf.shape(noise_filtered)[1]
+        noise_filtered = tf.cond(
+            Nf < N,
+            lambda: tf.pad(noise_filtered, [[0,0],[0, N - Nf]]),
+            lambda: noise_filtered[:, :N]
+        )
+
+        # --- Normalizar y combinar ---
+        noise_filtered = noise_filtered / (1e-6 + tf.reduce_max(tf.abs(noise_filtered), axis=1, keepdims=True))
+        audio = audio_harm + 0.05 * noise_filtered
+        audio = audio / (1e-6 + tf.reduce_max(tf.abs(audio), axis=1, keepdims=True))
+
         return audio
 
     # ------------------------
@@ -138,11 +202,12 @@ class Autoencder:
         # Desempaquetar
         K = self.n_harmonics
         harmonics = y_pred[:, :, :K]
-        f0        = y_pred[:, :, K:K+1]
-        loud      = y_pred[:, :, K+1:K+2]
+        noise     = y_pred[:, :, K:K+65]
+        f0        = y_pred[:, :, K+65:K+66]
+        loud      = y_pred[:, :, K+66:K+67]
 
         # Síntesis → audio
-        audio_pred = self.additive_synth(f0, loud, harmonics)  # (B,N)
+        audio_pred = self.additive_synth(f0, loud, harmonics, noise)  # (B,N)
 
         # STFT predicha (magnitud)
         S_pred = tf.abs(tf.signal.stft(

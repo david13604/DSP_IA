@@ -15,6 +15,7 @@ if gpus:
     try:
         for g in gpus:
             tf.config.experimental.set_memory_growth(g, True)
+        tf.config.optimizer.set_jit(False)
         print(f"Using GPU(s): {[g.name for g in gpus]}")
     except Exception as e:
         print("Could not set memory growth:", e)
@@ -72,20 +73,18 @@ def peak_envelope_1d(mag_1d: tf.Tensor):
 
 def peak_envelope_tf(mag):
     mag = tf.convert_to_tensor(mag, dtype=tf.float32)
-    rank = tf.rank(mag)
+    original_shape = tf.shape(mag)
+    rank = len(mag.shape)
 
-    def rank1():
+    if rank == 1:
         return peak_envelope_1d(mag)
 
-    def higher():
-        n = tf.shape(mag)[-1]
-        flat = tf.reshape(mag, (-1, n))  # (M, N)
-        env = tf.map_fn(
-            lambda row: peak_envelope_1d(row), flat, fn_output_signature=tf.float32
-        )
-        return tf.reshape(env, tf.shape(mag))
+    n = tf.shape(mag)[-1]
+    flat = tf.reshape(mag, (-1, n))
 
-    return tf.cond(tf.equal(rank, 1), rank1, higher)
+    env = tf.vectorized_map(peak_envelope_1d, flat)
+
+    return tf.reshape(env, original_shape)
 
 
 def topfig(x=10, y=10):
@@ -243,14 +242,14 @@ class FM_red:
 
         freqs = np.fft.rfftfreq(LARGO, d=1.0 / FS)
         scale = np.max(y_train_np)
-        plot_callback = SpectrumPlotCallback(y_train, freqs, scale)
+        plot_callback = SpectrumPlotCallback(y_train, freqs, scale, False)
         callbacks = [
             keras.callbacks.TerminateOnNaN(),
             keras.callbacks.ReduceLROnPlateau(
                 monitor="loss", factor=0.5, patience=25, min_lr=1e-6, verbose=1
             ),
             keras.callbacks.EarlyStopping(
-                monitor="loss", patience=250, restore_best_weights=False, verbose=1
+                monitor="loss", patience=100, restore_best_weights=True, verbose=1
             ),
             plot_callback,
         ]
@@ -269,49 +268,83 @@ class FM_red:
 
 
 class SpectrumPlotCallback(keras.callbacks.Callback):
-    def __init__(self, x_sample, freqs, scale):
+    def __init__(self, x_sample, freqs, scale, plot):
         super().__init__()
         self.x_sample = x_sample
         self.freqs = freqs
         self.scale = scale
         self.pause = 0.5
+        self.plot = plot
 
     def on_epoch_end(self, epoch, logs=None):
-        # Predict
-        y_pred = self.model.predict(self.x_sample, verbose=0)[0]  # (N,)
-        # True target (same as input in this setup)
-        y_true = tf.squeeze(self.x_sample, axis=0).numpy()  # (N,)
-        # Envelope of prediction
-        y_pred_env = tf.abs(peak_envelope_tf(y_pred))
-        # Ensure shapes match freq axis
-        if y_true.ndim > 1:
-            y_true = np.squeeze(y_true)
-        if y_pred_env.ndim > 1:
-            y_pred_env = np.squeeze(y_pred_env)
-        plt.figure(figsize=(10, 4))
-        # plt.plot(self.freqs, y_pred/self.scale, label=f"|Y_pred| epoch {epoch+1}")
-        plt.plot(self.freqs, y_true / self.scale, label="|Y_train|")
-        plt.plot(self.freqs, y_pred_env / self.scale, label="|Y_pred envelope|")
-        plt.xlim(0, 10000)
-        plt.grid()
-        plt.legend()
-        plt.title(f"Spectrum after epoch {epoch+1}")
-        plt.tight_layout()
-        topfig()
-        plt.show(block=False)
-        plt.pause(self.pause)
-        plt.close()
+        if self.plot:
+            # Predict
+            y_pred = self.model.predict(self.x_sample, verbose=0)[0]  # (N,)
+            # True target (same as input in this setup)
+            y_true = tf.squeeze(self.x_sample, axis=0).numpy()  # (N,)
+            # Envelope of prediction
+            y_pred_env = tf.abs(peak_envelope_tf(y_pred))
+            # Ensure shapes match freq axis
+            if y_true.ndim > 1:
+                y_true = np.squeeze(y_true)
+            if y_pred_env.ndim > 1:
+                y_pred_env = np.squeeze(y_pred_env)
+            plt.figure(figsize=(10, 4))
+
+            plt.plot(self.freqs, y_true / self.scale, label="|Y_train|")
+            plt.plot(self.freqs, y_pred_env / self.scale, label="|Y_pred envelope|")
+            plt.xlim(0, 10000)
+            plt.grid()
+            plt.legend()
+            plt.title(f"Spectrum after epoch {epoch+1}")
+            plt.tight_layout()
+            topfig()
+            plt.show(block=False)
+            plt.pause(self.pause)
+            plt.close()
+
+
+""" def mag_loss(y_true, y_pred):
+    # L1
+    y_pred = tf.abs(peak_envelope_tf(y_pred))
+    return tf.reduce_mean(tf.square(y_true - y_pred)) """
+
+
+def simple_envelope_tf(mag, window=51):
+    mag = tf.convert_to_tensor(mag, dtype=tf.float32)
+
+    # Ensure at least 2D for conv1d
+    if len(mag.shape) == 1:
+        mag = tf.expand_dims(mag, 0)
+        squeeze_after = True
+    else:
+        squeeze_after = False
+
+    # Add channel dimension
+    mag = tf.expand_dims(mag, -1)
+
+    # Moving max filter
+    kernel = tf.ones([window, 1, 1], dtype=tf.float32) / float(window)
+    env = tf.nn.conv1d(mag, kernel, stride=1, padding="SAME")
+
+    # Remove channel dimension
+    env = tf.squeeze(env, -1)
+
+    if squeeze_after:
+        env = tf.squeeze(env, 0)
+
+    return env
 
 
 def mag_loss(y_true, y_pred):
-    # L1
-    y_pred = tf.abs(peak_envelope_tf(y_pred))
-    return tf.reduce_mean(tf.square(y_true - y_pred))
+    # Use simpler envelope
+    y_pred_env = simple_envelope_tf(y_pred)
+    return tf.reduce_mean(tf.square(y_true - y_pred_env))
 
 
 if __name__ == "__main__":
     sr = FS
-    output_shape = 3
+    output_shape = 30
 
     path_y = "/mnt/c/Users/matth/Desktop/Other/DSP_IA/red_simple/Pollo_scream.mp3"
 
@@ -332,7 +365,7 @@ if __name__ == "__main__":
     model = FM_red(input_shape, output_shape, max)
     model.compile()
 
-    history = model.fit(y_train, y_train, epochs=2000, batch_size=1)
+    history = model.fit(y_train, y_train, epochs=200, batch_size=1)
 
     model.save("modelo_fm.h5")
 

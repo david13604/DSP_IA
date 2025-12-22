@@ -12,7 +12,7 @@ TARGET_SAMPLE_RATE = 48000
 TEST_SIZE = 0.10
 
 
-SOURCE_DATA_DIR = "/mnt/c/Users/matth/Desktop/Other/DSP_IA/Rave_db/BuK_single" 
+SOURCE_DATA_DIR = "/mnt/c/Users/matth/Desktop/Other/DSP_IA/Rave_db/BuK_all" 
 # Where the ready-to-train database will be saved
 OUTPUT_DB_DIR = "/mnt/c/Users/matth/Desktop/Other/DSP_IA/Rave_db/RAVE_db"
 

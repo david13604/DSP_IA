@@ -52,7 +52,7 @@ def generate_database():
     all_files = list(Path(SOURCE_DATA_DIR).rglob("*.wav"))
     
     if len(all_files) == 0:
-        print("No .wav files found! Check your SOURCE_DATA_DIR.")
+        print("No .wav files found")
         return
 
     print(f"Found {len(all_files)} audio files.")

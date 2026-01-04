@@ -4,7 +4,7 @@ import numpy as np
 
 
 audio_path = r"C:\Users\usuario\Desktop\DSP_IA_local\DSP_IA\SoundEffects\BluezoneCorp - Steampunk Machines\Bluezone_BC0305_steampunk_machine_mechanical_texture_heavy_impact_011.wav" 
-shift_bins = 5000  # Try positive or negative values
+shift_bins = 5000 
 n_peaks = 15
 
 # Original spectrum

@@ -160,12 +160,21 @@ if __name__ == "__main__":
     # Load data for training
     path = "dataset_single.npz"
 
-    x_train = np.load(path)["X"]
-    # Reshape to match input shape
-    x_train = np.stack([np.real(x_train), np.imag(x_train)], axis=-1).astype(np.float32)
-    x_train = np.expand_dims(x_train, axis=0)
+    x = np.load(path)["X"]
+    x = np.asarray(x)
+    
+    # Si viene con shape (1, N) o (N,), lo dejamos como (N,)
+    if x.ndim == 2 and x.shape[0] == 1:
+        x = x[0]
+    
+    # convertir complejo -> (time, 2)
+    x = np.stack([x.real, x.imag], axis=-1).astype(np.float32)   # (time, 2)
+    
+    # agregar batch -> (1, time, 2)
+    x_train = x[None, :, :]
+    
+    print("x_train shape final:", x_train.shape)  # (1, 58797, 2)
 
-    print(f"x_train shape: {x_train.shape}")
 
     #path_y = ("/mnt/c/Users/matth/OneDrive/Desktop/PUC/DSP_IA/red_simple/Pollo_scream.mp3")
     path_y = (r"C:\Users\usuario\Desktop\DSP_IA_local\red_simple\Pollo_scream.mp3")
